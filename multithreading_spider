@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import re
+import time
+from queue import Queue
+import threading
+from commonRequests import make_session
+import urllib3
+urllib3.disable_warnings()
+__author__ = 'Terry'
+'''
+    多线程爬虫
+    分四步走；
+        第一步；获取url的list
+           | url队列 url_queue
+        第二步；发送请求requsets
+           | 响应队列 response_queue
+        第三步；返回响应response
+           | 数据队列 data_queue
+        第四步；保存数据
+'''
+
+class Xiaoshou:
+
+    def __init__(self,headline,pn):
+        self.session = make_session()
+        self.url_queue = Queue()
+        self.response_queue = Queue()
+        self.data_queue = Queue()
+        self.headline = headline
+        self.pn = pn
+        self.count = 0
+
+    def visit_index(self):
+        # 访问首页
+        url = "https://www.x23us.com/"
+        self.session.get(url)
+
+    def visit_list(self):
+        url = f"https://www.23us.so/list/{self.headline}_{self.pn}.html"
+        headers = {
+            'Referer':'https://www.23us.so/'
+        }
+        resp = self.session.get(url, headers = headers).text
+        self.list_url = re.findall(r'<td class="L"><a href="(.*?.html)">.*?</a></td>',resp)
+        # self.sum_pn = str(re.search(r'<em id="pagestats">(.*?)</em>',resp).group(1)).split('/')[1]
+        self.sum_pn = re.search('<a href=".*?" class="last">(.*?)</a>',resp).group(1)
+
+    def get_url(self):
+        for i in self.list_url:
+            self.url_queue.put(i)
+
+    def visit_url(self):
+        while True:
+            url = self.url_queue.get()
+            referers = f"https://www.23us.so/list/{self.headline}_{self.pn}.html"
+            headers = {
+                'Referer': referers
+            }
+            response = self.session.get(url,headers=headers)
+            self.response_queue.put(response)
+            self.url_queue.task_done()
+
+    def dispose_data(self):
+        while True:
+            resp = self.response_queue.get()
+            resp.encoding = "utf-8"
+            resp = resp.text
+            data_dict = {
+                'name': re.search(r'<dd><h1>(.*?)</h1></dd>', resp).group(1).replace(" 全文阅读", ''),
+                'write': re.search(r'<th>小说作者</th>\n<td>(.*?)</td>', resp, re.RegexFlag.MULTILINE).group(1).replace("&nbsp;", ''),
+                'state': re.search(r'<th>小说状态</th>\n<td>(.*?)</td></tr><tr>', resp, re.RegexFlag.MULTILINE).group(1).replace("&nbsp;", ''),
+                'lengt': re.search(r'<th>全文长度</th>\n<td>(.*?)</td>', resp, re.RegexFlag.MULTILINE).group(1).replace("&nbsp;", ''),
+                'times': re.search(r'<th>最后更新</th>\n<td>(.*?)</td></tr>', resp, re.RegexFlag.MULTILINE).group(1).replace("&nbsp;", ''),
+                'count': re.search(r'<th>总点击数</th>\n<td>(.*?)</td>', resp, re.RegexFlag.MULTILINE).group(1).replace("&nbsp;", '')
+            }
+            self.data_queue.put(data_dict)
+            self.response_queue.task_done()
+
+    def save_data(self):
+        while True:
+            data = self.data_queue.get()
+            self.count += 1
+            print(f"第{self.count}条记录",data)
+            self.data_queue.task_done()
+
+    def run(self):
+        def run_data():
+            url_thread = threading.Thread(target=self.get_url)
+            response_thread = threading.Thread(target=self.visit_url)
+            dispose_thread = threading.Thread(target=self.dispose_data)
+            save_thread = threading.Thread(target=self.save_data)
+            list_thread = [url_thread, response_thread, dispose_thread, save_thread]
+            for t in list_thread:
+                t.setDaemon(True) #把该线程设置守护线程
+                t.start()
+            for i in [self.url_queue, self.response_queue, self.data_queue]:
+                i.join()  # 实际上意味着等到队列为空，再执行别的操作
+
+        start = time.time()
+        while True:
+            self.pn += 1
+            self.visit_list()
+            run_data()
+            if self.pn == int(self.sum_pn):
+                self.headline += 1
+            if self.headline == 9:
+                break
+        end = time.time()
+        print("执行的时间",end-start)
+
+
+if __name__=="__main__":
+    spider_xiao = Xiaoshou(1,0)
+    spider_xiao.run()
